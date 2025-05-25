@@ -1,21 +1,12 @@
 import { db } from '@/src/db';
-import { account, session as sessionTable } from '@/src/db/schema';
-import { eq, and } from 'drizzle-orm';
+import { session as sessionTable } from '@/src/db/schema';
+import { eq } from 'drizzle-orm';
 
 export async function getGitHubAccessToken(userId: string): Promise<string | null> {
   try {
-    const accounts = await db
-      .select()
-      .from(account)
-      .where(
-        and(
-          eq(account.userId, userId),
-          eq(account.providerId, 'github')
-        )
-      )
-      .limit(1);
-
-    return accounts[0]?.accessToken || null;
+    // Use the token refresh logic
+    const { getGitHubAccessTokenWithRefresh } = await import('./auth/token-refresh');
+    return await getGitHubAccessTokenWithRefresh(userId);
   } catch (error) {
     console.error('Error fetching GitHub access token:', error);
     return null;

@@ -2,76 +2,103 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/src/db';
 import { project } from '@/src/db/schema/projects';
 import { eq, and, desc } from 'drizzle-orm';
-import { getSessionFromHeaders, getCurrentUserGitHubToken } from '@/src/lib/auth-utils';
-import { getRepository, checkRepositoryAccess } from '@/src/lib/github';
+import { getSession } from '@/src/lib/auth-server';
+import { getRepository } from '@/src/lib/github/services/repositories';
+import { 
+  createProjectSchema, 
+  validateRepositoryAccess,
+  validateFlyAppName 
+} from '@/src/lib/validation/project-validation';
+import { 
+  handleApiError, 
+  ValidationError, 
+  AuthorizationError,
+  ConflictError,
+  withRetry 
+} from '@/src/lib/utils/error-handling';
 
 // GET /api/projects - List user's projects
-export async function GET(request: NextRequest) {
+export async function GET() {
   try {
-    const session = await getSessionFromHeaders(request);
+    const session = await getSession();
     if (!session) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+      return handleApiError(new AuthorizationError());
     }
 
     const projects = await db
       .select()
       .from(project)
-      .where(eq(project.userId, session.userId))
-      .orderBy(desc(project.updatedAt));
+      .where(eq(project.userId, session.user.id))
+      .orderBy(desc(project.createdAt));
 
     return NextResponse.json({ projects });
   } catch (error) {
-    console.error('Error fetching projects:', error);
-    return NextResponse.json(
-      { error: 'Failed to fetch projects' },
-      { status: 500 }
-    );
+    return handleApiError(error);
   }
 }
 
 // POST /api/projects - Create a new project
 export async function POST(request: NextRequest) {
   try {
-    const session = await getSessionFromHeaders(request);
+    const session = await getSession();
     if (!session) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+      return handleApiError(new AuthorizationError());
     }
 
+    // Parse and validate request body
     const body = await request.json();
-    const { repoOwner, repoName, dockerfilePath, buildCommand, installCommand, startCommand } = body;
+    const validatedData = createProjectSchema.parse(body);
+    const { repoFullName, ...projectData } = validatedData;
 
-    if (!repoOwner || !repoName) {
-      return NextResponse.json(
-        { error: 'Repository owner and name are required' },
-        { status: 400 }
-      );
-    }
-
-    // Get GitHub access token
-    const accessToken = await getCurrentUserGitHubToken(request);
+    // Get user's GitHub access token first
+    const { getGitHubAccessToken } = await import('@/src/lib/auth-utils');
+    const accessToken = await getGitHubAccessToken(session.user.id);
+    
     if (!accessToken) {
-      return NextResponse.json(
-        { error: 'GitHub access token not found' },
-        { status: 400 }
-      );
+      throw new AuthorizationError('GitHub access token not found. Please reconnect your GitHub account.');
     }
-
-    // Verify user has access to the repository
-    const hasAccess = await checkRepositoryAccess(repoOwner, repoName, accessToken);
-    if (!hasAccess) {
-      return NextResponse.json(
-        { error: 'You do not have access to this repository' },
-        { status: 403 }
-      );
-    }
-
-    // Get repository details
-    const repo = await getRepository(repoOwner, repoName, accessToken);
+    
+    // Parse repository owner and name
+    const [owner, repoName] = repoFullName.split('/');
+    
+    // Get repository details with retry, using access token
+    const repo = await withRetry(
+      () => getRepository(owner, repoName, accessToken),
+      { maxAttempts: 2 }
+    );
+    
     if (!repo) {
-      return NextResponse.json(
-        { error: 'Repository not found' },
-        { status: 404 }
-      );
+      throw new ValidationError('Repository not found');
+    }
+    
+    // Get GitHub username from the access token
+    const { createUserClient } = await import('@/src/lib/github/client');
+    const githubClient = createUserClient(accessToken);
+    const { data: githubUser } = await githubClient.users.getAuthenticated();
+    
+    // Validate repository access
+    const { isValid, error } = await validateRepositoryAccess(
+      repoFullName,
+      githubUser.login, // Use GitHub username
+      accessToken
+    );
+    
+    if (!isValid) {
+      throw new AuthorizationError(error || 'Cannot access repository');
+    }
+
+    // Generate and validate Fly app name with edge case handling
+    const { sanitizeFlyConfig } = await import('@/src/lib/utils/edge-case-handlers');
+    const flyConfig = sanitizeFlyConfig({
+      flyAppNamePrefix: repo.name,
+      flyRegion: 'iad',
+      flyOrgSlug: 'personal'
+    });
+    
+    const flyAppValidation = validateFlyAppName(flyConfig.flyAppNamePrefix);
+    if (!flyAppValidation.isValid) {
+      // Use a fallback name if validation fails
+      flyConfig.flyAppNamePrefix = `app-${Date.now().toString(36)}`.substring(0, 20);
     }
 
     // Check if project already exists
@@ -80,43 +107,46 @@ export async function POST(request: NextRequest) {
       .from(project)
       .where(
         and(
-          eq(project.userId, session.userId),
-          eq(project.githubRepoId, repo.id)
+          eq(project.repoFullName, repo.fullName),
+          eq(project.userId, session.user.id)
         )
       )
       .limit(1);
 
     if (existingProjects.length > 0) {
-      return NextResponse.json(
-        { error: 'Project already exists for this repository' },
-        { status: 409 }
-      );
+      throw new ConflictError('Project already exists for this repository');
     }
 
     // Create the project
-    const newProject = await db
+    const [newProject] = await db
       .insert(project)
       .values({
-        userId: session.userId,
+        userId: session.user.id,
         githubRepoId: repo.id,
         repoOwner: repo.owner.login,
         repoName: repo.name,
         repoFullName: repo.fullName,
         defaultBranch: repo.defaultBranch,
-        dockerfilePath,
-        buildCommand: buildCommand || 'npm run build',
-        installCommand: installCommand || 'npm install',
-        startCommand: startCommand || 'npm start',
-        flyAppNamePrefix: repo.name.toLowerCase().replace(/[^a-z0-9-]/g, '-'),
+        dockerfilePath: projectData.dockerfilePath,
+        buildCommand: projectData.buildCommand || 'npm run build',
+        installCommand: projectData.installCommand || 'npm install',
+        startCommand: projectData.startCommand || 'npm start',
+        flyAppNamePrefix: flyConfig.flyAppNamePrefix,
+        nodeVersion: '20',
+        flyRegion: flyConfig.flyRegion,
+        flyOrgSlug: flyConfig.flyOrgSlug,
+        isActive: true,
       })
       .returning();
 
-    return NextResponse.json({ project: newProject[0] }, { status: 201 });
-  } catch (error) {
-    console.error('Error creating project:', error);
+    // Log successful creation
+    console.log(`Project created: ${newProject.id} for ${repo.fullName}`);
+
     return NextResponse.json(
-      { error: 'Failed to create project' },
-      { status: 500 }
+      { project: newProject },
+      { status: 201 }
     );
+  } catch (error) {
+    return handleApiError(error);
   }
 }

@@ -2,12 +2,12 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/src/db';
 import { project } from '@/src/db/schema/projects';
 import { eq } from 'drizzle-orm';
-import { getSessionFromHeaders } from '@/src/lib/auth-utils';
+import { getSession } from '@/src/lib/auth-server';
 
 // GET /api/projects/check-repo?owner=xxx&repo=xxx
 export async function GET(request: NextRequest) {
   try {
-    const session = await getSessionFromHeaders(request);
+    const session = await getSession();
     if (!session) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }

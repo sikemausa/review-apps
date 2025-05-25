@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getSessionFromHeaders, getCurrentUserGitHubToken } from '@/src/lib/auth-utils';
+import { getSession } from '@/src/lib/auth-server';
+import { getGitHubAccessToken } from '@/src/lib/auth-utils';
 import { isAppInstalledOnRepo, checkRepositoryAccess } from '@/src/lib/github';
 
 interface Params {
@@ -15,7 +16,7 @@ export async function GET(
 ) {
   try {
     // Check authentication
-    const session = await getSessionFromHeaders(request);
+    const session = await getSession();
     if (!session) {
       return NextResponse.json(
         { error: 'Unauthorized' },
@@ -26,7 +27,7 @@ export async function GET(
     const { owner, repo } = params;
 
     // Get GitHub access token from database
-    const accessToken = await getCurrentUserGitHubToken(request);
+    const accessToken = await getGitHubAccessToken(session.user.id);
 
     if (!accessToken) {
       return NextResponse.json(

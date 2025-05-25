@@ -5,15 +5,14 @@ import { eq, and } from 'drizzle-orm';
 import { getSession } from '@/src/lib/auth-server';
 
 interface Params {
-  params: Promise<{
+  params: {
     id: string;
-  }>;
+  };
 }
 
 // GET /api/projects/[id] - Get a specific project
 export async function GET(request: NextRequest, { params }: Params) {
   try {
-    const { id } = await params;
     const session = await getSession();
     if (!session) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -24,7 +23,7 @@ export async function GET(request: NextRequest, { params }: Params) {
       .from(project)
       .where(
         and(
-          eq(project.id, id),
+          eq(project.id, params.id),
           eq(project.userId, session.user.id)
         )
       )
@@ -40,7 +39,7 @@ export async function GET(request: NextRequest, { params }: Params) {
       .from(deployment)
       .where(
         and(
-          eq(deployment.projectId, id),
+          eq(deployment.projectId, params.id),
           eq(deployment.status, 'ready')
         )
       );
@@ -61,7 +60,6 @@ export async function GET(request: NextRequest, { params }: Params) {
 // PATCH /api/projects/[id] - Update a project
 export async function PATCH(request: NextRequest, { params }: Params) {
   try {
-    const { id } = await params;
     const session = await getSession();
     if (!session) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -101,7 +99,7 @@ export async function PATCH(request: NextRequest, { params }: Params) {
       .set(updates)
       .where(
         and(
-          eq(project.id, id),
+          eq(project.id, params.id),
           eq(project.userId, session.user.id)
         )
       )
@@ -124,7 +122,6 @@ export async function PATCH(request: NextRequest, { params }: Params) {
 // DELETE /api/projects/[id] - Delete a project
 export async function DELETE(request: NextRequest, { params }: Params) {
   try {
-    const { id } = await params;
     const session = await getSession();
     if (!session) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -136,7 +133,7 @@ export async function DELETE(request: NextRequest, { params }: Params) {
       .from(project)
       .where(
         and(
-          eq(project.id, id),
+          eq(project.id, params.id),
           eq(project.userId, session.user.id)
         )
       )
@@ -152,7 +149,7 @@ export async function DELETE(request: NextRequest, { params }: Params) {
       .from(deployment)
       .where(
         and(
-          eq(deployment.projectId, id),
+          eq(deployment.projectId, params.id),
           eq(deployment.status, 'ready')
         )
       );
@@ -172,7 +169,7 @@ export async function DELETE(request: NextRequest, { params }: Params) {
       .delete(project)
       .where(
         and(
-          eq(project.id, id),
+          eq(project.id, params.id),
           eq(project.userId, session.user.id)
         )
       );

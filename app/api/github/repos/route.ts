@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getSessionFromHeaders, getCurrentUserGitHubToken } from '@/src/lib/auth-utils';
+import { getSession } from '@/src/lib/auth-server';
+import { getGitHubAccessToken } from '@/src/lib/auth-utils';
 import { getUserRepositories } from '@/src/lib/github';
 
 export async function GET(request: NextRequest) {
   try {
     // Check authentication
-    const session = await getSessionFromHeaders(request);
+    const session = await getSession();
     if (!session) {
       return NextResponse.json(
         { error: 'Unauthorized' },
@@ -20,7 +21,7 @@ export async function GET(request: NextRequest) {
     const sort = searchParams.get('sort') as 'created' | 'updated' | 'pushed' | 'full_name' || 'updated';
 
     // Get GitHub access token from database
-    const accessToken = await getCurrentUserGitHubToken(request);
+    const accessToken = await getGitHubAccessToken(session.user.id);
 
     if (!accessToken) {
       return NextResponse.json(
