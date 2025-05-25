@@ -74,28 +74,27 @@ export async function POST(request: NextRequest) {
     
     console.log(`Processing PR #${pr.number} - ${action} on ${repo.full_name}`);
     
-    // TODO: Check if this repository has a project configured
-    // For now, we'll just log the webhook data
+    // Import database and schema at the top of the function
+    const { db } = await import('@/src/db');
+    const { project } = await import('@/src/db/schema/projects');
+    const { eq } = await import('drizzle-orm');
     
-    const webhookData = {
-      action,
-      prNumber: pr.number,
-      prTitle: pr.title,
-      branch: pr.head.ref,
-      commitSha: pr.head.sha,
-      repository: {
-        id: repo.id,
-        name: repo.name,
-        fullName: repo.full_name,
-        owner: repo.owner.login,
-        cloneUrl: pr.head.repo.clone_url
-      },
-      installationId: installation?.id,
-      user: {
-        login: pr.user.login,
-        id: pr.user.id
-      }
-    };
+    // Check if this repository has a project configured
+    const projects = await db
+      .select()
+      .from(project)
+      .where(eq(project.repoFullName, repo.full_name))
+      .limit(1);
+    
+    if (projects.length === 0) {
+      console.log(`No project configured for ${repo.full_name}, ignoring webhook`);
+      return NextResponse.json({ 
+        message: 'No project configured for this repository' 
+      });
+    }
+    
+    const projectConfig = projects[0];
+    console.log(`Found project ${projectConfig.id} for ${repo.full_name}`);
     
     // Handle different PR actions
     if (shouldTriggerDeployment(action)) {
@@ -110,9 +109,13 @@ export async function POST(request: NextRequest) {
         commitSha: pr.head.sha,
         repository: repo.full_name,
         installationId: installation?.id,
+        projectId: projectConfig.id,
         timestamp: new Date().toISOString()
       };
       console.log('Deployment data:', deploymentData);
+      
+      // TODO: Create deployment record in database
+      // TODO: Queue deployment job to Fly.io
     } else if (shouldCleanupDeployment(action)) {
       console.log('PR closed - would cleanup deployment preview');
       // TODO: Cleanup deployment job
