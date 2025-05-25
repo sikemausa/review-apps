@@ -10,6 +10,11 @@ import {
   extractWebhookHeaders,
   WEBHOOK_EVENTS 
 } from '@/src/lib/github/webhook-verification';
+import { db } from '@/src/db';
+import { project, deployment } from '@/src/db/schema';
+import { eq, and } from 'drizzle-orm';
+import { DeploymentService } from '@/src/lib/fly/deployment-service';
+import { createCommentOnPR } from '@/src/lib/github';
 
 export async function POST(request: NextRequest) {
   // Get webhook secret from environment
@@ -74,60 +79,131 @@ export async function POST(request: NextRequest) {
     
     console.log(`Processing PR #${pr.number} - ${action} on ${repo.full_name}`);
     
-    // TODO: Check if this repository has a project configured
-    // For now, we'll just log the webhook data
+    // Check if this repository has a project configured
+    const [projectData] = await db
+      .select()
+      .from(project)
+      .where(
+        and(
+          eq(project.githubRepoId, repo.id),
+          eq(project.isActive, true)
+        )
+      )
+      .limit(1);
     
-    const webhookData = {
-      action,
-      prNumber: pr.number,
-      prTitle: pr.title,
-      branch: pr.head.ref,
-      commitSha: pr.head.sha,
-      repository: {
-        id: repo.id,
-        name: repo.name,
-        fullName: repo.full_name,
-        owner: repo.owner.login,
-        cloneUrl: pr.head.repo.clone_url
-      },
-      installationId: installation?.id,
-      user: {
-        login: pr.user.login,
-        id: pr.user.id
-      }
-    };
+    if (!projectData) {
+      console.log('No active project found for this repository');
+      return NextResponse.json({
+        message: 'No project configured for this repository',
+        repository: repo.full_name
+      });
+    }
+    
+    const deploymentService = new DeploymentService();
     
     // Handle different PR actions
     if (shouldTriggerDeployment(action)) {
-      console.log(`PR ${action} - would create/update deployment preview`);
-      // TODO: Create or update deployment job
-      // For now, we'll prepare the deployment data structure
-      const deploymentData = {
-        action,
-        prNumber: pr.number,
-        prTitle: pr.title,
-        branch: pr.head.ref,
-        commitSha: pr.head.sha,
-        repository: repo.full_name,
-        installationId: installation?.id,
-        timestamp: new Date().toISOString()
-      };
-      console.log('Deployment data:', deploymentData);
+      console.log(`PR ${action} - creating/updating deployment preview`);
+      
+      try {
+        // Post initial comment
+        await createCommentOnPR(
+          repo.owner.login,
+          repo.name,
+          pr.number,
+          `🚀 **Deployment Preview**\n\nStarting deployment for commit \`${pr.head.sha.substring(0, 7)}\`...\n\nThis may take a few minutes.`
+        );
+        
+        // Check if deployment already exists for this PR
+        const [existingDeployment] = await db
+          .select()
+          .from(deployment)
+          .where(
+            and(
+              eq(deployment.projectId, projectData.id),
+              eq(deployment.prNumber, pr.number)
+            )
+          )
+          .limit(1);
+        
+        if (existingDeployment && existingDeployment.status === 'active') {
+          // Destroy existing deployment first
+          await deploymentService.destroyDeployment(existingDeployment.id);
+        }
+        
+        // Create new deployment
+        const deploymentId = await deploymentService.deployPullRequest({
+          projectId: projectData.id,
+          prNumber: pr.number,
+          prTitle: pr.title,
+          prAuthor: pr.user.login,
+          commitSha: pr.head.sha,
+          repoFullName: repo.full_name,
+          installationId: installation?.id || 0,
+        });
+        
+        // Get deployment details
+        const [newDeployment] = await db
+          .select()
+          .from(deployment)
+          .where(eq(deployment.id, deploymentId))
+          .limit(1);
+        
+        if (newDeployment?.flyAppUrl) {
+          // Update PR comment with success
+          await createCommentOnPR(
+            repo.owner.login,
+            repo.name,
+            pr.number,
+            `✅ **Deployment Preview Ready!**\n\n🔗 **Preview URL:** ${newDeployment.flyAppUrl}\n📝 **Commit:** \`${pr.head.sha.substring(0, 7)}\`\n🚀 **App Name:** \`${newDeployment.flyAppName}\`\n\nThe preview will be automatically updated when you push new commits.`
+          );
+        }
+      } catch (error: any) {
+        console.error('Deployment error:', error);
+        
+        // Post error comment
+        await createCommentOnPR(
+          repo.owner.login,
+          repo.name,
+          pr.number,
+          `❌ **Deployment Failed**\n\nThere was an error deploying your preview:\n\`\`\`\n${error.message}\n\`\`\`\n\nPlease check your build configuration and try again.`
+        );
+      }
     } else if (shouldCleanupDeployment(action)) {
-      console.log('PR closed - would cleanup deployment preview');
-      // TODO: Cleanup deployment job
-      const cleanupData = {
-        action,
-        prNumber: pr.number,
-        repository: repo.full_name,
-        timestamp: new Date().toISOString()
-      };
-      console.log('Cleanup data:', cleanupData);
+      console.log('PR closed - cleaning up deployment preview');
+      
+      try {
+        // Find active deployment for this PR
+        const [activeDeployment] = await db
+          .select()
+          .from(deployment)
+          .where(
+            and(
+              eq(deployment.projectId, projectData.id),
+              eq(deployment.prNumber, pr.number),
+              eq(deployment.status, 'active')
+            )
+          )
+          .limit(1);
+        
+        if (activeDeployment) {
+          await deploymentService.destroyDeployment(activeDeployment.id);
+          
+          // Post cleanup comment
+          await createCommentOnPR(
+            repo.owner.login,
+            repo.name,
+            pr.number,
+            `🧹 **Deployment Preview Removed**\n\nThe preview environment has been cleaned up.`
+          );
+        }
+      } catch (error: any) {
+        console.error('Cleanup error:', error);
+      }
     }
     
-    // For now, just acknowledge the webhook
     return NextResponse.json({
-      message: 'Webhook received',
+      message: 'Webhook processed',
       action,
       prNumber: pr.number,
       repository: repo.full_name
