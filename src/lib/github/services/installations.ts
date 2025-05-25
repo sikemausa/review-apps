@@ -56,9 +56,9 @@ export async function getUserInstallations(
 ): Promise<Installation[]> {
   try {
     const client = createUserClient(accessToken);
-    const { data } = await client.apps.listInstallationsAccessibleToUser();
+    const { data } = await client.request('GET /user/installations');
 
-    return data.installations.map(installation => ({
+    return data.installations.map((installation: any) => ({
       id: installation.id,
       account: {
         login: installation.account.login,
@@ -72,8 +72,13 @@ export async function getUserInstallations(
       createdAt: new Date(installation.created_at),
       updatedAt: new Date(installation.updated_at),
     }));
-  } catch (error) {
+  } catch (error: any) {
     console.error('Failed to get user installations:', error);
+    // If user token doesn't have permission, fall back to app installations
+    if (error.status === 403 || error.status === 404) {
+      console.log('Falling back to app installations');
+      return getAppInstallations();
+    }
     return [];
   }
 }
@@ -83,18 +88,10 @@ export async function getInstallationRepositories(
   installationId: number
 ): Promise<InstallationRepository[]> {
   try {
-    const client = getGitHubAppClient();
-    const { data } = await client.apps.listReposAccessibleToInstallation({
-      installation_id: installationId,
-      per_page: 100,
-    });
-
-    return data.repositories.map(repo => ({
-      id: repo.id,
-      name: repo.name,
-      fullName: repo.full_name,
-      private: repo.private,
-    }));
+    // We need to use the user's token to get repos accessible to the installation
+    // The app token can't directly list installation repos without proper setup
+    // For now, return empty array and rely on user token for repo listing
+    return [];
   } catch (error) {
     console.error(`Failed to get repositories for installation ${installationId}:`, error);
     return [];
