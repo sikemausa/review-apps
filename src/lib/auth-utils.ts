@@ -23,9 +23,9 @@ export async function getGitHubAccessToken(userId: string): Promise<string | nul
 }
 
 export async function getSessionFromHeaders(request: Request) {
-  // Better Auth uses 'better-auth-session' as the default cookie name
+  // Better Auth uses 'better-auth.session_token' as the cookie name
   const cookieHeader = request.headers.get('cookie');
-  const sessionToken = cookieHeader?.match(/better-auth-session=([^;]+)/)?.[1] ||
+  const sessionToken = cookieHeader?.match(/better-auth\.session_token=([^;]+)/)?.[1] ||
                        request.headers.get('authorization')?.replace('Bearer ', '');
   
   if (!sessionToken) {

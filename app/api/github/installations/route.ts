@@ -1,11 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getSessionFromHeaders, getCurrentUserGitHubToken } from '@/src/lib/auth-utils';
+import { auth } from '@/src/lib/auth';
+import { headers } from 'next/headers';
+import { getGitHubAccessToken } from '@/src/lib/auth-utils';
 import { getUserInstallations, getInstallationRepositories } from '@/src/lib/github';
 
 export async function GET(request: NextRequest) {
   try {
-    // Check authentication
-    const session = await getSessionFromHeaders(request);
+    // Check authentication using better-auth's built-in method
+    const session = await auth.api.getSession({
+      headers: await headers(),
+    });
+    
     if (!session) {
       return NextResponse.json(
         { error: 'Unauthorized' },
@@ -14,7 +19,7 @@ export async function GET(request: NextRequest) {
     }
 
     // Get GitHub access token from database
-    const accessToken = await getCurrentUserGitHubToken(request);
+    const accessToken = await getGitHubAccessToken(session.user.id);
 
     if (!accessToken) {
       return NextResponse.json(
@@ -24,7 +29,9 @@ export async function GET(request: NextRequest) {
     }
 
     // Get user's installations
+    console.log('Fetching installations for user:', session.user.id);
     const installations = await getUserInstallations(accessToken);
+    console.log('Found installations:', installations.length);
 
     // Get repositories for each installation
     const installationsWithRepos = await Promise.all(
@@ -39,6 +46,10 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json({
       installations: installationsWithRepos,
+      debug: {
+        userHasToken: !!accessToken,
+        installationCount: installations.length,
+      }
     });
   } catch (error) {
     console.error('Error fetching installations:', error);

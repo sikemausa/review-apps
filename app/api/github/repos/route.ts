@@ -1,11 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getSessionFromHeaders, getCurrentUserGitHubToken } from '@/src/lib/auth-utils';
+import { auth } from '@/src/lib/auth';
+import { headers } from 'next/headers';
+import { getGitHubAccessToken } from '@/src/lib/auth-utils';
 import { getUserRepositories } from '@/src/lib/github';
 
 export async function GET(request: NextRequest) {
   try {
-    // Check authentication
-    const session = await getSessionFromHeaders(request);
+    // Check authentication using better-auth's built-in method
+    const session = await auth.api.getSession({
+      headers: await headers(),
+    });
+    
     if (!session) {
       return NextResponse.json(
         { error: 'Unauthorized' },
@@ -18,9 +23,10 @@ export async function GET(request: NextRequest) {
     const page = parseInt(searchParams.get('page') || '1');
     const perPage = parseInt(searchParams.get('per_page') || '30');
     const sort = searchParams.get('sort') as 'created' | 'updated' | 'pushed' | 'full_name' || 'updated';
+    const installationId = searchParams.get('installationId');
 
     // Get GitHub access token from database
-    const accessToken = await getCurrentUserGitHubToken(request);
+    const accessToken = await getGitHubAccessToken(session.user.id);
 
     if (!accessToken) {
       return NextResponse.json(
@@ -36,12 +42,20 @@ export async function GET(request: NextRequest) {
       sort,
     });
 
+    // If installation ID is provided, filter repositories by those accessible to the installation
+    let filteredRepositories = repositories;
+    if (installationId) {
+      // For now, return all repositories since we're using "all" repository selection
+      // In a production app, you'd want to filter based on the actual installation settings
+      filteredRepositories = repositories;
+    }
+
     return NextResponse.json({
-      repositories,
+      repositories: filteredRepositories,
       pagination: {
         page,
         perPage,
-        hasMore: repositories.length === perPage,
+        hasMore: filteredRepositories.length === perPage,
       },
     });
   } catch (error) {

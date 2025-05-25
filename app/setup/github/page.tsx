@@ -86,10 +86,10 @@ export default function GitHubSetupPage() {
               </button>
               
               <button
-                onClick={() => router.push('/dashboard')}
+                onClick={() => router.push('/setup/repositories')}
                 className="ml-4 px-6 py-3 text-gray-700 font-medium hover:text-gray-900"
               >
-                Skip for now
+                I already installed it
               </button>
             </div>
 
